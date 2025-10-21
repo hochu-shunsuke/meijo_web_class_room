@@ -1,0 +1,433 @@
+// ====================================================================
+//  GAS 課題リマインドシステム - 最終完全版
+//  機能: Classroom/WebClassの課題を取得・統合し、Google Tasksに自動登録、完了同期、整理を行う
+// ====================================================================
+
+// --- 定数設定 ---
+// ★ここを自分のTasksリスト名に合わせて変更してください。
+const TASK_LIST_NAME = '大学課題'; 
+
+const SHEET_NAME_CLASSROOM = 'Classroom課題';
+const SHEET_NAME_WEBCLASS = 'WebClass課題';
+// 列定義: [0:ソース, 1:授業名, 2:課題タイトル, 3:締切日時, 4:課題リンク (URL), 5:Tasks ID, 6:登録済みフラグ]
+const HEADER = ['ソース', '授業名', '課題タイトル', '締切日時', '課題リンク (URL)', 'Tasks ID', '登録済みフラグ'];
+
+// --- メインフロー実行関数 ---
+
+/**
+ * 【メイン関数】毎日定刻に実行するトリガーに設定します。
+ */
+function dailySystemRun() {
+  Logger.log('--- 課題リマインドシステム 実行開始 ---');
+  
+  // 1. Classroomの最新データを取得し、シートに書き込む
+  fetchClassroomAssignments(); 
+  
+  // 2. Tasksの完了状態をスプレッドシートに反映させる（同期）
+  syncTaskCompletionStatus(); 
+  
+  // 3. スプレッドシートの統合データから、未登録・期限内の課題をTasksに追加
+  integrateAndRegisterTasks();
+  
+  // 4. 古いデータや完了済みのデータをシートから削除（整理）
+  cleanupOldAssignments(); 
+  
+  Logger.log('--- 課題リマインドシステム 実行完了 ---');
+}
+
+// --- 課題データ収集関数 ---
+
+/**
+ * Google Classroomの課題を取得し、シートに書き込む (Classroom APIを利用)
+ */
+function fetchClassroomAssignments() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME_CLASSROOM);
+
+  if (!sheet) {
+    Logger.log('エラー: Classroom課題シートが見つかりません。');
+    return;
+  }
+
+  if (sheet.getLastRow() === 0) {
+     sheet.getRange(1, 1, 1, HEADER.length).setValues([HEADER]).setFontWeight('bold');
+  }
+  
+  let allAssignments = [];
+
+  try {
+    const coursesResponse = Classroom.Courses.list({ courseStates: ['ACTIVE'], studentId: 'me' });
+    const courses = coursesResponse.courses;
+    
+    if (!courses || courses.length === 0) return;
+
+    courses.forEach(course => {
+      const courseWorkResponse = Classroom.Courses.CourseWork.list(course.id, {
+        courseWorkStates: ['PUBLISHED'] 
+      });
+
+      if (courseWorkResponse.courseWork) {
+        courseWorkResponse.courseWork.forEach(assignment => {
+          const dueDate = assignment.dueDate ? getFormattedDueDate(assignment) : '期限なし';
+          if (assignment.alternateLink && assignment.title) {
+             // 課題リンクをユニークキーとして利用するため、必ず取得
+             allAssignments.push([
+               'Classroom', course.name, assignment.title, dueDate, assignment.alternateLink, '', ''
+             ]);
+          }
+        });
+      }
+    });
+
+    if (allAssignments.length > 0) {
+      // 既存のデータ行をクリア（ヘッダー行は残す）
+      sheet.getRange(2, 1, sheet.getMaxRows(), HEADER.length).clearContent();
+      
+      // 新しいデータを書き込む
+      sheet.getRange(2, 1, allAssignments.length, allAssignments[0].length).setValues(allAssignments);
+      Logger.log(`${SHEET_NAME_CLASSROOM}に${allAssignments.length}件の課題を書き込みました。`);
+    }
+
+  } catch (e) {
+    Logger.log('Classroom課題取得中にエラーが発生しました: ' + e.toString());
+  }
+}
+
+// --- Tasks完了状態の同期関数 ---
+
+/**
+ * Tasks側で完了した課題をチェックし、スプレッドシートのフラグを更新します。
+ */
+function syncTaskCompletionStatus() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetNames = [SHEET_NAME_WEBCLASS, SHEET_NAME_CLASSROOM];
+  const taskListId = getTaskListId(TASK_LIST_NAME);
+
+  sheetNames.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet || sheet.getLastRow() <= 1) return;
+
+    const range = sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADER.length);
+    const data = range.getValues();
+    let updated = false;
+
+    data.forEach((row, index) => {
+      const tasksId = row[5]; // F列: Tasks ID
+      const registeredFlag = row[6]; // G列: 登録済みフラグ
+
+      if (tasksId && registeredFlag !== 'COMPLETED' && registeredFlag !== 'DELETED') { 
+        try {
+          const task = Tasks.Tasks.get(taskListId, tasksId);
+
+          if (task.status === 'completed') {
+            data[index][6] = 'COMPLETED'; // 完了ステータスに更新
+            updated = true;
+          }
+        } catch (e) {
+          if (e.toString().includes('notFound')) {
+            data[index][6] = 'DELETED'; // Tasksから削除されていた場合
+            updated = true;
+          }
+        }
+      }
+    });
+
+    if (updated) {
+      range.setValues(data);
+      Logger.log(`${sheetName} のTasks完了状態を同期しました。`);
+    }
+  });
+}
+
+// --- 課題の統合と登録関数 ---
+
+/**
+ * WebClassとClassroomの課題を統合し、Tasksに登録するメインの関数。
+ */
+function integrateAndRegisterTasks() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const webclassSheet = ss.getSheetByName(SHEET_NAME_WEBCLASS);
+  const classroomSheet = ss.getSheetByName(SHEET_NAME_CLASSROOM);
+  
+  if (!webclassSheet || !classroomSheet) {
+    Logger.log('エラー: 必要なシートが見つかりません。');
+    return;
+  }
+  
+  // Pythonからの書き込みを想定し、WebClassシートのヘッダーも確認
+  if (webclassSheet.getLastRow() === 0) {
+     webclassSheet.getRange(1, 1, 1, HEADER.length).setValues([HEADER]).setFontWeight('bold');
+  }
+
+  const taskListId = getTaskListId(TASK_LIST_NAME); 
+
+  // 1. 各シートからデータを取得 (ヘッダー行を除く)
+  const webclassData = getDataFromSheet(webclassSheet);
+  const classroomData = getDataFromSheet(classroomSheet);
+  
+  // 2. データを統合し、未登録で期限内の課題を抽出
+  const allAssignments = [...webclassData, ...classroomData];
+  const assignmentsToRegister = filterAssignmentsToRegister(allAssignments);
+
+  if (assignmentsToRegister.length === 0) {
+    Logger.log('新しくTasksに登録すべき課題はありませんでした。');
+    return;
+  }
+  
+  // 3. Tasksに登録し、シートのフラグとTasks IDを更新
+  registerAssignmentsToTasks(assignmentsToRegister, taskListId, ss);
+}
+
+
+// --- ヘルパー関数群 ---
+
+/**
+ * シートからデータを取得する (ヘッダー行は除く)
+ */
+function getDataFromSheet(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return []; 
+  
+  // 2行目から最終行まで、ヘッダーの列数分を読み込む
+  return sheet.getRange(2, 1, lastRow - 1, HEADER.length).getValues();
+}
+
+/**
+ * Tasksに登録すべき課題をフィルタリングする。
+ */
+function filterAssignmentsToRegister(assignments) {
+  const unique = [];
+  const registeredLinks = new Set(); // 課題リンク（URL）をキーとして使用
+
+  assignments.forEach(row => {
+    const dueDateStr = row[3];
+    const link = row[4];
+    const registered = row[6];
+    
+    // 1. 既に登録済み('TRUE', 'COMPLETED', 'DELETED') は除外
+    if (registered) return; 
+
+    // 2. 締切が有効で、未来の日付であるかをチェック
+    const dueDate = new Date(dueDateStr);
+    const now = new Date();
+    // 期限なし または既に過去の課題は除外
+    if (isNaN(dueDate.getTime()) || dueDate < now) return; 
+
+    // 3. リンク（URL）で完全に重複する課題を除外
+    if (!registeredLinks.has(link)) { 
+      unique.push(row);
+      registeredLinks.add(link);
+    }
+  });
+  return unique;
+}
+
+
+/**
+ * Tasksに課題を登録し、スプレッドシートのフラグとTasks IDを更新する。
+ */
+function registerAssignmentsToTasks(assignments, taskListId, ss) {
+  assignments.forEach(row => {
+    const [source, courseName, title, dueDateStr, link] = [row[0], row[1], row[2], row[3], row[4]];
+    const date = new Date(dueDateStr);
+    
+    const task = Tasks.newTask();
+    task.title = `[${courseName} / ${source}] ${title}`; 
+    task.notes = `課題リンク:\n${link}`;
+    
+    if (date instanceof Date && !isNaN(date)) {
+      // 期日をUTCの午前0時に設定
+      const rfc3339 = date.toISOString().split('T')[0] + 'T00:00:00.000Z';
+      task.due = rfc3339;
+    }
+    
+    try {
+      const registeredTask = Tasks.Tasks.insert(task, taskListId);
+      Logger.log(`タスク登録成功: ${title} (Tasks ID: ${registeredTask.id})`);
+      
+      // 登録成功後、スプレッドシートの該当行のフラグとIDを更新
+      setTaskRegisteredFlag(ss, source, link, registeredTask.id);
+
+    } catch (e) {
+      Logger.log(`タスク登録エラー (${title}): ${e.toString()}`);
+    }
+  });
+}
+
+/**
+ * Tasksへの登録が成功した際、スプレッドシートのフラグとTasks IDを更新する。
+ */
+function setTaskRegisteredFlag(ss, source, link, taskId) {
+    const sheetName = source === 'WebClass' ? SHEET_NAME_WEBCLASS : SHEET_NAME_CLASSROOM;
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet || sheet.getLastRow() <= 1) return;
+
+    // リンク(E列)を検索し、一致する行のF列(Tasks ID)とG列(登録済みフラグ)を更新
+    const dataRange = sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADER.length);
+    const data = dataRange.getValues();
+    
+    for (let i = 0; i < data.length; i++) {
+        // データ配列のインデックス: リンク(4), Tasks ID(5), 登録済みフラグ(6)
+        if (data[i][4] === link) { 
+            data[i][5] = taskId; // Tasks ID を設定
+            data[i][6] = 'TRUE'; // 登録済みフラグを設定
+            
+            // 該当行だけを更新
+            sheet.getRange(i + 2, 1, 1, HEADER.length).setValues([data[i]]);
+            return;
+        }
+    }
+}
+
+/**
+ * 完了した課題や、期限が大幅に過ぎた古いデータをシートから削除する関数
+ */
+function cleanupOldAssignments() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetNames = [SHEET_NAME_WEBCLASS, SHEET_NAME_CLASSROOM];
+  const today = new Date();
+  // 削除のしきい値: 期限から60日以上経過
+  const retentionDays = 60;
+  const retentionThreshold = new Date(today.setDate(today.getDate() - retentionDays));
+
+  sheetNames.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet || sheet.getLastRow() <= 1) return;
+
+    const maxRows = sheet.getLastRow();
+    const data = sheet.getRange(2, 1, maxRows - 1, HEADER.length).getValues();
+    const rowsToDelete = [];
+
+    // 下から遡ってチェック (削除時の行のずれを防ぐため)
+    for (let i = data.length - 1; i >= 0; i--) {
+      const row = data[i];
+      const dueDate = new Date(row[3]); // 締切日時 (D列)
+      const statusFlag = row[6];       // 登録済みフラグ (G列)
+      
+      const isCompleted = statusFlag === 'COMPLETED'; // 完了済み
+      const isDeleted = statusFlag === 'DELETED';     // Tasksから削除済み
+      const isTooOld = !isNaN(dueDate.getTime()) && dueDate < retentionThreshold; // 期限から60日経過
+
+      if (isCompleted || isDeleted || isTooOld) {
+        rowsToDelete.push(i + 2); // スプレッドシートの行番号
+      }
+    }
+
+    rowsToDelete.sort((a, b) => b - a).forEach(rowIndex => {
+      sheet.deleteRow(rowIndex);
+    });
+
+    Logger.log(`${sheetName} から ${rowsToDelete.length} 行の古いデータを削除しました。`);
+  });
+}
+
+/**
+ * タスクリスト名からタスクリストIDを取得
+ */
+function getTaskListId(taskListName) {
+    const lists = Tasks.Tasklists.list().getItems()
+    let taskListId
+    for (let i = 0; i < lists.length; i++) {
+        if (lists[i].title == taskListName) {
+            taskListId = lists[i].id
+            break; 
+        }
+    }
+    
+    if (!taskListId) {
+        throw new Error(`タスクリスト "${taskListName}" が見つかりませんでした。`);
+    }
+    
+    return taskListId
+}
+
+/**
+ * Classroom APIから取得した日付オブジェクトを整形するヘルパー関数
+ */
+function getFormattedDueDate(assignment) {
+  const due = assignment.dueDate;
+  
+  if (!due || !due.year) return '期限なし';
+  
+  const hour = assignment.dueTime ? assignment.dueTime.hours : 23;
+  const minute = assignment.dueTime ? assignment.dueTime.minutes || 59 : 59;
+  
+  const date = new Date(due.year, due.month - 1, due.day, hour, minute);
+  
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm');
+}
+
+
+
+
+
+
+
+// --- GAS Webアプリ用関数 ---
+
+/**
+ * 外部からのPOSTリクエスト（Pythonスクリプト）を受け付けるエントリポイント
+ */
+function doPost(e) {
+  // リクエストデータがない場合はエラー
+  if (!e.postData || e.postData.type !== "application/json") {
+    return ContentService.createTextOutput(
+      JSON.stringify({ status: 'ERROR', message: 'Invalid request data type or missing payload.' })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  try {
+    // 1. 受信したJSONデータを解析
+    const data = JSON.parse(e.postData.contents);
+    const assignments = data.assignments;
+
+    if (!Array.isArray(assignments)) {
+      throw new Error('Payload does not contain an array of assignments.');
+    }
+    
+    // 2. スプレッドシートへの書き込みを実行
+    writeWebClassDataToSheet(assignments);
+    
+    // 3. 成功応答をPythonスクリプトに返す
+    return ContentService.createTextOutput(
+      JSON.stringify({ status: 'SUCCESS', message: `${assignments.length}件のWebClass課題をスプレッドシートに書き込みました。` })
+    ).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (error) {
+    Logger.log('doPost Error: ' + error.toString());
+    // 4. エラー応答をPythonスクリプトに返す
+    return ContentService.createTextOutput(
+      JSON.stringify({ status: 'ERROR', message: 'Internal Server Error: ' + error.message })
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+
+
+/**
+ * 受信したWebClassの課題データを「WebClass課題」シートに書き込むヘルパー関数
+ */
+function writeWebClassDataToSheet(assignments) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('WebClass課題');
+  const HEADER = ['ソース', '授業名', '課題タイトル', '締切日時', '課題リンク (URL)', 'Tasks ID', '登録済みフラグ'];
+
+  if (!sheet) {
+    throw new Error('シートが見つかりません: WebClass課題');
+  }
+
+  // 初期設定としてヘッダーを書き込む
+  if (sheet.getLastRow() === 0) {
+     sheet.getRange(1, 1, 1, HEADER.length).setValues([HEADER]).setFontWeight('bold');
+  }
+  
+  // 既存のデータ行をクリア（ヘッダー行は残す）
+  sheet.getRange(2, 1, sheet.getMaxRows(), HEADER.length).clearContent();
+      
+  // 新しいデータを2行目から書き込む
+  if (assignments.length > 0) {
+      sheet.getRange(2, 1, assignments.length, assignments[0].length).setValues(assignments);
+  }
+  
+  Logger.log(`WebClass課題シートに ${assignments.length} 件の課題を書き込みました。`);
+}
