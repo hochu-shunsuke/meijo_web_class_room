@@ -1,0 +1,37 @@
+/**
+ * Config.gs
+ * システム全体で使用する共通定数。このファイルでのみ const 宣言を行います。
+ */
+
+// WebClass関連のURL
+const WEBCLASS_BASE_URL = 'https://rpwebcls.meijo-u.ac.jp';
+const SSO_URL = 'https://slbsso.meijo-u.ac.jp/opensso/json/authenticate';
+const LOGIN_URL = WEBCLASS_BASE_URL + '/webclass/login.php?auth_mode=SAML';
+const ACS_URL = WEBCLASS_BASE_URL + '/simplesaml/module.php/saml/sp/saml2-acs.php/default-sp';
+
+// 正規表現
+const ID_REGEX = /id=([a-f0-9]+)/;
+const REDIRECT_REGEX = /(?:window\.location\.href\s*=\s*|content\s*=\s*["']0;\s*URL=)['"]([^"']+)["']/;
+const COURSE_LINK_REGEX = /\/webclass\/course\.php\/[a-f0-9]+/;
+
+// システム定数
+// ★ここを自分のTasksリスト名に合わせて変更してください。
+const TASK_LIST_NAME = '大学課題'; 
+const SHEET_NAME_CLASSROOM = 'Classroom課題';
+const SHEET_NAME_WEBCLASS = 'WebClass課題';
+// 列定義: [0:ソース, 1:授業名, 2:課題タイトル, 3:締切日時, 4:課題リンク (URL), 5:Tasks ID, 6:登録済みフラグ]
+const HEADER = ['ソース', '授業名', '課題タイトル', '締切日時', '課題リンク (URL)', 'Tasks ID', '登録済みフラグ'];
+
+// --- WebClass/HTTP通信設定 ---
+
+/**
+ * サーバーに負荷をかけないよう、リクエスト時にランダムに使用するUser-Agentのリスト
+ * (Auth.gsで使用)
+ */
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:109.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/605.1.15'
+];
