@@ -1,5 +1,5 @@
 // ====================================================================
-//  GAS 課題リマインドシステム - 最終完全版
+//  GAS 課題リマインドシステム - 最終完全版 (重複登録防止修正済み)
 //  機能: Classroom/WebClassの課題を取得・統合し、Google Tasksに自動登録、完了同期、整理を行う
 // ====================================================================
 
@@ -20,7 +20,7 @@ const HEADER = ['ソース', '授業名', '課題タイトル', '締切日時', 
 function dailySystemRun() {
   Logger.log('--- 課題リマインドシステム 実行開始 ---');
   
-  // 1. Classroomの最新データを取得し、シートに書き込む
+  // 1. Classroomの最新データを取得し、シートに書き込む (★Tasks ID/フラグを保持するように修正済)
   fetchClassroomAssignments(); 
   
   // 2. Tasksの完了状態をスプレッドシートに反映させる（同期）
@@ -39,6 +39,7 @@ function dailySystemRun() {
 
 /**
  * Google Classroomの課題を取得し、シートに書き込む (Classroom APIを利用)
+ * 【修正点】既存データのTasks IDと登録済みフラグを保持しながら、新規課題を追加/既存課題を更新する。
  */
 function fetchClassroomAssignments() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -52,6 +53,22 @@ function fetchClassroomAssignments() {
   if (sheet.getLastRow() === 0) {
      sheet.getRange(1, 1, 1, HEADER.length).setValues([HEADER]).setFontWeight('bold');
   }
+  
+  // 既存データを読み込み、リンクをキーとするマップを作成
+  const existingDataMap = new Map(); // Key: 課題リンク(URL), Value: [Tasks ID, 登録済みフラグ]
+  const existingData = sheet.getLastRow() > 1 
+    ? sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADER.length).getValues()
+    : [];
+    
+  // 既存のTasks IDと登録済みフラグを保持
+  existingData.forEach(row => {
+    const link = row[4]; // E列: 課題リンク (URL)
+    const tasksId = row[5]; // F列: Tasks ID
+    const registeredFlag = row[6]; // G列: 登録済みフラグ
+    if (link) {
+      existingDataMap.set(link, [tasksId, registeredFlag]);
+    }
+  });
   
   let allAssignments = [];
 
@@ -70,7 +87,7 @@ function fetchClassroomAssignments() {
         courseWorkResponse.courseWork.forEach(assignment => {
           const dueDate = assignment.dueDate ? getFormattedDueDate(assignment) : '期限なし';
           if (assignment.alternateLink && assignment.title) {
-             // 課題リンクをユニークキーとして利用するため、必ず取得
+             // 課題リンクをユニークキーとして利用
              allAssignments.push([
                'Classroom', course.name, assignment.title, dueDate, assignment.alternateLink, '', ''
              ]);
@@ -80,18 +97,41 @@ function fetchClassroomAssignments() {
     });
 
     if (allAssignments.length > 0) {
+      const mergedAssignments = [];
+      
+      // 新しい課題データに既存のTasks情報をマージする
+      allAssignments.forEach(newRow => {
+        const link = newRow[4]; // 新しい課題のリンク
+        
+        if (existingDataMap.has(link)) {
+          // 既存の課題であれば、Tasks IDとフラグを保持
+          const [tasksId, registeredFlag] = existingDataMap.get(link);
+          
+          // 新しい情報で上書きしつつ、Tasks関連情報をセット
+          newRow[5] = tasksId;
+          newRow[6] = registeredFlag;
+        } else {
+          // 新規課題であれば、Tasks IDとフラグは空のまま
+          newRow[5] = '';
+          newRow[6] = '';
+        }
+        mergedAssignments.push(newRow);
+      });
+      
       // 既存のデータ行をクリア（ヘッダー行は残す）
       sheet.getRange(2, 1, sheet.getMaxRows(), HEADER.length).clearContent();
       
-      // 新しいデータを書き込む
-      sheet.getRange(2, 1, allAssignments.length, allAssignments[0].length).setValues(allAssignments);
-      Logger.log(`${SHEET_NAME_CLASSROOM}に${allAssignments.length}件の課題を書き込みました。`);
+      // 結合したデータを書き込む
+      sheet.getRange(2, 1, mergedAssignments.length, mergedAssignments[0].length).setValues(mergedAssignments);
+      Logger.log(`${SHEET_NAME_CLASSROOM}に${mergedAssignments.length}件の課題を書き込みました。`);
     }
 
   } catch (e) {
     Logger.log('Classroom課題取得中にエラーが発生しました: ' + e.toString());
   }
 }
+
+// --------------------------------------------------------------------
 
 // --- Tasks完了状態の同期関数 ---
 
@@ -138,6 +178,8 @@ function syncTaskCompletionStatus() {
     }
   });
 }
+
+// --------------------------------------------------------------------
 
 // --- 課題の統合と登録関数 ---
 
@@ -279,6 +321,8 @@ function setTaskRegisteredFlag(ss, source, link, taskId) {
     }
 }
 
+// --------------------------------------------------------------------
+
 /**
  * 完了した課題や、期限が大幅に過ぎた古いデータをシートから削除する関数
  */
@@ -321,6 +365,8 @@ function cleanupOldAssignments() {
   });
 }
 
+// --------------------------------------------------------------------
+
 /**
  * タスクリスト名からタスクリストIDを取得
  */
@@ -357,11 +403,7 @@ function getFormattedDueDate(assignment) {
   return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm');
 }
 
-
-
-
-
-
+// --------------------------------------------------------------------
 
 // --- GAS Webアプリ用関数 ---
 
@@ -385,7 +427,7 @@ function doPost(e) {
       throw new Error('Payload does not contain an array of assignments.');
     }
     
-    // 2. スプレッドシートへの書き込みを実行
+    // 2. スプレッドシートへの書き込みを実行 (★Tasks ID/フラグを保持するように修正済)
     writeWebClassDataToSheet(assignments);
     
     // 3. 成功応答をPythonスクリプトに返す
@@ -406,6 +448,7 @@ function doPost(e) {
 
 /**
  * 受信したWebClassの課題データを「WebClass課題」シートに書き込むヘルパー関数
+ * 【修正点】既存データのTasks IDと登録済みフラグを保持しながら、新規課題を追加/既存課題を更新する。
  */
 function writeWebClassDataToSheet(assignments) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -421,13 +464,46 @@ function writeWebClassDataToSheet(assignments) {
      sheet.getRange(1, 1, 1, HEADER.length).setValues([HEADER]).setFontWeight('bold');
   }
   
+  // 既存データを読み込み、リンクをキーとするマップを作成
+  const existingDataMap = new Map(); // Key: 課題リンク(URL), Value: [Tasks ID, 登録済みフラグ]
+  const existingData = sheet.getLastRow() > 1 
+    ? sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADER.length).getValues()
+    : [];
+    
+  // 既存のTasks IDと登録済みフラグを保持
+  existingData.forEach(row => {
+    const link = row[4]; // E列: 課題リンク (URL)
+    const tasksId = row[5]; // F列: Tasks ID
+    const registeredFlag = row[6]; // G列: 登録済みフラグ
+    if (link) {
+      existingDataMap.set(link, [tasksId, registeredFlag]);
+    }
+  });
+
+  const mergedAssignments = [];
+  
+  // 新しいWebClass課題データに既存のTasks情報をマージ
+  assignments.forEach(newRow => {
+    const link = newRow[4]; 
+    if (existingDataMap.has(link)) {
+      const [tasksId, registeredFlag] = existingDataMap.get(link);
+      newRow[5] = tasksId;
+      newRow[6] = registeredFlag;
+    } else {
+      // 新規課題の場合は空文字列をセット
+      newRow[5] = '';
+      newRow[6] = '';
+    }
+    mergedAssignments.push(newRow);
+  });
+  
   // 既存のデータ行をクリア（ヘッダー行は残す）
   sheet.getRange(2, 1, sheet.getMaxRows(), HEADER.length).clearContent();
       
-  // 新しいデータを2行目から書き込む
-  if (assignments.length > 0) {
-      sheet.getRange(2, 1, assignments.length, assignments[0].length).setValues(assignments);
+  // 結合したデータを2行目から書き込む
+  if (mergedAssignments.length > 0) {
+      sheet.getRange(2, 1, mergedAssignments.length, mergedAssignments[0].length).setValues(mergedAssignments);
   }
   
-  Logger.log(`WebClass課題シートに ${assignments.length} 件の課題を書き込みました。`);
+  Logger.log(`WebClass課題シートに ${mergedAssignments.length} 件の課題を書き込みました。`);
 }
