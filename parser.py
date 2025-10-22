@@ -10,52 +10,53 @@ def parse_course_contents(html):
     コンテンツリストを抽出する．
     """
     soup = BeautifulSoup(html, 'html.parser')
-    result = []
+    items = soup.find_all('section', class_='list-group-item cl-contentsList_listGroupItem')
     
-    panels = soup.find_all('section', class_='panel panel-default cl-contentsList_folder')
-    if not panels:
-        # 代替の構造を探す (もしあれば)
-        pass
-
-    for panel in panels:
-        heading = panel.find('div', class_='panel-heading')
-        panel_title = heading.find('h4', class_='panel-title').get_text(strip=True) if heading else ""
+    result = []
+    for item in items:
+        # Newフラグ
+        is_new = bool(item.find('div', class_='cl-contentsList_new'))
         
-        list_group = panel.find('div', class_='list-group')
-        items = []
-        if list_group:
-            for item in list_group.find_all('section', class_='list-group-item cl-contentsList_listGroupItem'):
-                is_new = item.find('div', class_='cl-contentsList_new') is not None
-                name_tag = item.find('h4', class_='cm-contentsList_contentName')
-                # cl-contentsList_new（New）を除去
-                if name_tag:
-                    for new_tag in name_tag.find_all('div', class_='cl-contentsList_new'):
-                        new_tag.decompose()
-                a_tag = name_tag.find('a') if name_tag else None
-                title = name_tag.get_text(strip=True) if name_tag else ""
-                url = a_tag['href'] if a_tag and a_tag.has_attr('href') else ""
-                
-                id_match = ID_REGEX.search(url)
-                share_link = f"https://rpwebcls.meijo-u.ac.jp/webclass/login.php?id={id_match.group(1)}&page=1&auth_mode=SAML" if id_match else ""
-                
-                category_tag = item.find('div', class_='cl-contentsList_categoryLabel')
-                category = category_tag.get_text(strip=True) if category_tag else ""
-                
-                period = ""
-                for label, data in zip(item.find_all('div', class_='cm-contentsList_contentDetailListItemLabel'), item.find_all('div', class_='cm-contentsList_contentDetailListItemData')):
-                    if "利用可能期間" in label.get_text():
+        # タイトルとURL
+        title = ""
+        url = ""
+        share_link = ""
+        
+        if name_tag := item.find('h4', class_='cm-contentsList_contentName'):
+            # cl-contentsList_newを除去
+            for new_tag in name_tag.find_all('div', class_='cl-contentsList_new'):
+                new_tag.decompose()
+            
+            title = name_tag.get_text(strip=True)
+            
+            # URLの取得
+            if a_tag := name_tag.find('a'):
+                url = a_tag.get('href', '')
+                # IDの抽出とshare_linkの生成
+                if id_match := ID_REGEX.search(url):
+                    share_link = f"https://rpwebcls.meijo-u.ac.jp/webclass/login.php?id={id_match.group(1)}&page=1&auth_mode=SAML"
+        
+        # カテゴリ
+        category = ""
+        if category_tag := item.find('div', class_='cl-contentsList_categoryLabel'):
+            category = category_tag.get_text(strip=True)
+        
+        # 利用可能期間
+        period = ""
+        for detail_item in item.find_all('div', class_='cm-contentsList_contentDetailListItem'):
+            if label := detail_item.find('div', class_='cm-contentsList_contentDetailListItemLabel'):
+                if "利用可能期間" in label.get_text():
+                    if data := detail_item.find('div', class_='cm-contentsList_contentDetailListItemData'):
                         period = data.get_text(strip=True)
-                
-                items.append({
-                    'title': title,
-                    'url': url,
-                    'share_link': share_link,
-                    'is_new': is_new,
-                    'category': category,
-                    'period': period
-                })
+                    break
+        
         result.append({
-            'panel_title': panel_title,
-            'items': items
+            'title': title,
+            'url': url,
+            'share_link': share_link,
+            'is_new': is_new,
+            'category': category,
+            'period': period
         })
+    
     return result

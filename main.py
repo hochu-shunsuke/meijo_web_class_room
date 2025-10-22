@@ -2,10 +2,7 @@ import re
 import urllib.parse
 import json # JSONはデータ送信のために必要
 import requests # HTTP通信のために必要
-
 from bs4 import BeautifulSoup
-# --- スプレッドシート連携用に追加したgspreadなどのimportは削除 ---
-
 import settings
 import os
 from pathlib import Path
@@ -47,7 +44,9 @@ def get_course_links(client: WebClassClient):
         
         course_links = set()
         for a_tag in soup.find_all('a', href=True, class_='list-group-item course'):
-            name = a_tag.get_text(strip=True)
+            raw_name = a_tag.get_text(strip=True)
+            # 「»」と数字（先頭の空白含む）を除去
+            name = re.sub(r'^»?\s*\d+\s*', '', raw_name)
             href = a_tag.get("href")
             if href and '/webclass/course.php/' in href:
                 course_links.add((name, href))
@@ -153,29 +152,28 @@ def main():
         print(f"  ({i+1}/{len(course_links)}) [{result}] - {course_name}")
         
         if result == "成功" and parsed_data:
-            for panel in parsed_data:
-                for item in panel['items']:
-                    
-                    # 締切日時（終了日時）の抽出（データ整形）
-                    period_str = item.get('period', '')
-                    due_date_str = ''
-                    if ' - ' in period_str:
-                        due_date_str = period_str.split(' - ')[1].strip()
-                    else:
-                        due_date_str = period_str
+            # parsed_dataは直接アイテムのリスト
+            for item in parsed_data:
+                # 締切日時（終了日時）の抽出（データ整形）
+                period_str = item.get('period', '')
+                due_date_str = ''
+                if ' - ' in period_str:
+                    due_date_str = period_str.split(' - ')[1].strip()
+                else:
+                    due_date_str = period_str
 
-                    # GASの列構成に合わせてデータを整形
-                    # [0:ソース, 1:授業名, 2:課題タイトル, 3:締切日時, 4:課題リンク (URL), 5:Tasks ID, 6:登録済みフラグ]
-                    row = [
-                        'WebClass',
-                        course_name,
-                        item['title'] + f" ({item['category']})",
-                        due_date_str,
-                        item['share_link'],
-                        '',
-                        ''
-                    ]
-                    all_assignments.append(row)
+                # GASの列構成に合わせてデータを整形
+                # [0:ソース, 1:授業名, 2:課題タイトル, 3:締切日時, 4:課題リンク (URL), 5:Tasks ID, 6:登録済みフラグ]
+                row = [
+                    'WebClass',
+                    course_name,
+                    item['title'] + f" ({item['category']})",
+                    due_date_str,
+                    item['share_link'],
+                    '',
+                    ''
+                ]
+                all_assignments.append(row)
 
     if not all_assignments:
         print("WebClassからコンテンツは見つかりませんでした．")
