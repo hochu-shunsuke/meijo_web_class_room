@@ -4,33 +4,23 @@
     <base target="_top">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { 
-            margin: 15px; 
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background-color: #f8f9fa;
-        }
-        .container-fluid {
-            background-color: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
+        body { margin: 15px; }
     </style>
 </head>
 <body>
 
     <div class="container-fluid">
-        <h4 class="mb-3">WebClass 認証情報登録</h4>
-        <p class="text-muted small">学籍番号とパスワードを入力してください。情報はGoogleの安全な領域に保存されます。</p>
+        <h4>WebClass 認証情報登録</h4>
+        <p class="text-muted">学籍番号とパスワードを入力してください。情報はGoogleの安全な領域に保存されます。</p>
         
         <div id="alert-message" class="alert alert-danger d-none" role="alert"></div>
 
-        <form id="auth-form" onsubmit="return handleFormSubmit(this)">
+        <form onsubmit="return handleFormSubmit(this)">
             <div class="mb-3">
                 <label for="userid" class="form-label">学籍番号 (User ID)</label>
                 <input type="text" class="form-control" id="userid" required>
             </div>
-            <div class="mb-4">
+            <div class="mb-3">
                 <label for="password" class="form-label">パスワード (Password)</label>
                 <input type="password" class="form-control" id="password" required>
             </div>
@@ -44,27 +34,20 @@
     // ボタン操作のためのUIエレメントを取得
     const saveButton = document.getElementById('save-btn');
     const alertMessage = document.getElementById('alert-message');
-    const form = document.getElementById('auth-form');
 
     /**
-     * フォーム送信時の処理
+     * フォーム送信時の処理（GASサーバーへの通信を開始）
      */
     function handleFormSubmit(form) {
-        const userid = form.userid.value.trim();
-        const password = form.password.value.trim();
-        
-        // クライアント側で必須項目の警告を出す（GAS側のエラーを防ぐ）
-        if (!userid || !password) {
-            onFailure({message: "学籍番号とパスワードの両方を入力してください。"});
-            return false;
-        }
+        const userid = form.userid.value;
+        const password = form.password.value;
 
         // UIを更新
         saveButton.disabled = true;
         saveButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 保存中...';
         alertMessage.classList.add('d-none'); 
 
-        // GASサーバー側関数 'setCredentials' の呼び出し (Properties.gs)
+        // GASサーバー側関数 'setCredentials' の呼び出し (Properties.gsに定義)
         google.script.run
             .withSuccessHandler(onSuccess)
             .withFailureHandler(onFailure)
@@ -83,8 +66,10 @@
         alertMessage.textContent = '✅ 認証情報を正常に保存しました。';
         alertMessage.classList.remove('d-none');
         
-        saveButton.disabled = false;
-        saveButton.innerHTML = '資格情報を登録';
+        // 成功したらダイアログを閉じる
+        setTimeout(function() {
+            google.script.host.close();
+        }, 1000); // 1秒後に閉じる
     }
     
     /**
@@ -93,15 +78,12 @@
     function onFailure(error) {
         alertMessage.classList.remove('alert-success');
         alertMessage.classList.add('alert-danger');
-        // GAS側から送られたエラーメッセージを表示する
-        alertMessage.textContent = '🚨 エラーが発生しました: ' + (error.message || '不明なエラー');
+        alertMessage.textContent = '🚨 エラーが発生しました: ' + error.message;
         alertMessage.classList.remove('d-none');
         
         saveButton.disabled = false;
         saveButton.innerHTML = '資格情報を登録';
     }
     </script>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

@@ -15,13 +15,15 @@ function onOpen() {
 
 /**
  * 認証情報入力用のカスタムダイアログを表示する
- * (Properties.gsのsetCredentials関数に依存)
+ * ★修正点: Settings.html ファイルを読み込み、ダイアログを表示する
  */
 function showCredentialDialog() {
-  const html = HtmlService.createHtmlOutput('<div>WebClassのIDとパスワードをScript Propertiesに安全に保存します。<br><input type="text" id="userid" placeholder="ユーザーID"><br><input type="password" id="password" placeholder="パスワード"><br><button onclick="google.script.run.setCredentials(document.getElementById(\'userid\').value, document.getElementById(\'password\').value); window.close();">保存</button></div>')
-      .setWidth(300)
-      .setHeight(150);
-  SpreadsheetApp.getUi().showModalDialog(html, 'WebClass認証情報の設定');
+  // Settings.htmlファイルを読み込む
+  const htmlOutput = HtmlService.createHtmlOutputFromFile('Settings')
+      .setWidth(450)
+      .setHeight(250); // サイズを調整
+      
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, 'WebClass認証情報の設定');
 }
 
 /**
